@@ -1,0 +1,7 @@
+name = "whatsapp-assistant-webhook"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+# Variables no-secretas (secrets van con: wrangler secret put NOMBRE)
+# [vars]
+# BACKEND_URL = "https://tu-app.railway.app"
