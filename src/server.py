@@ -67,7 +67,7 @@ def health():
 def recent():
     conn = get_connection(DB_PATH)
     rows = conn.execute("""
-        SELECT message_id, sender, content, type, source, amount, created_at
+        SELECT message_id, sender, content, type, source, created_at
         FROM messages ORDER BY created_at DESC LIMIT 10
     """).fetchall()
     conn.close()
