@@ -13,7 +13,7 @@
  */
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (url.pathname !== "/webhook") {
@@ -25,7 +25,7 @@ export default {
     }
 
     if (request.method === "POST") {
-      return handleMessage(request, env);
+      return handleMessage(request, env, ctx);
     }
 
     return new Response("Method not allowed", { status: 405 });
@@ -51,7 +51,7 @@ function handleVerification(request, env) {
 
 // ── Mensajes entrantes ────────────────────────────────────────────────────────
 
-async function handleMessage(request, env) {
+async function handleMessage(request, env, ctx) {
   const rawBody = await request.text();
 
   // Validar firma X-Hub-Signature-256
@@ -62,18 +62,9 @@ async function handleMessage(request, env) {
     return new Response("Forbidden", { status: 403 });
   }
 
-  // Responder a Meta inmediatamente (< 20s o reintenta)
-  const forwardPromise = forwardToBackend(rawBody, env);
-
-  // No esperamos — respondemos 200 OK a Meta ya
-  // (forwardPromise corre en background via waitUntil si hay ExecutionContext)
-  return new Response("OK", {
-    status: 200,
-    headers: { "Content-Type": "text/plain" },
-  }).then
-    ? // Si es un ambiente que soporta waitUntil lo usamos
-      new Response("OK", { status: 200 })
-    : new Response("OK", { status: 200 });
+  // Responder a Meta inmediatamente y reenviar en background con ctx.waitUntil
+  ctx.waitUntil(forwardToBackend(rawBody, env));
+  return new Response("OK", { status: 200 });
 }
 
 // ── Validación de firma HMAC-SHA256 ──────────────────────────────────────────
