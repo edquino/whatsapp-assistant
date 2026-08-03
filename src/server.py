@@ -87,9 +87,11 @@ def test_transcribe(media_id: str):
     import subprocess, tempfile, urllib.request, json as _json
     steps = {}
     try:
-        # Step 1: ffmpeg disponible?
-        r = subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
-        steps["ffmpeg"] = "ok" if r.returncode == 0 else f"error: {r.stderr[:100]}"
+        # Step 1: ffmpeg disponible via imageio-ffmpeg?
+        from imageio_ffmpeg import get_ffmpeg_exe
+        ffmpeg_bin = get_ffmpeg_exe()
+        r = subprocess.run([ffmpeg_bin, "-version"], capture_output=True, timeout=5)
+        steps["ffmpeg"] = f"ok ({ffmpeg_bin})" if r.returncode == 0 else f"error: {r.stderr[:100]}"
     except Exception as e:
         steps["ffmpeg"] = f"not found: {e}"
 
@@ -160,9 +162,11 @@ def _transcribe_audio(media_id: str) -> str | None:
 
         wav_path = ogg_path.replace(".ogg", ".wav")
 
-        # 4. Convertir a WAV 16kHz mono con ffmpeg
+        # 4. Convertir a WAV 16kHz mono con ffmpeg (via imageio-ffmpeg, sin depender del sistema)
+        from imageio_ffmpeg import get_ffmpeg_exe
+        ffmpeg_bin = get_ffmpeg_exe()
         result = subprocess.run(
-            ["ffmpeg", "-i", ogg_path, "-ar", "16000", "-ac", "1", "-y", wav_path],
+            [ffmpeg_bin, "-i", ogg_path, "-ar", "16000", "-ac", "1", "-y", wav_path],
             capture_output=True, timeout=30
         )
         if result.returncode != 0:
