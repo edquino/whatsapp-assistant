@@ -81,6 +81,39 @@ def health():
     }
 
 
+@app.get("/test-transcribe/{media_id}")
+def test_transcribe(media_id: str):
+    """Diagnóstico: intenta transcribir un media_id y devuelve el resultado o error."""
+    import subprocess, tempfile, urllib.request, json as _json
+    steps = {}
+    try:
+        # Step 1: ffmpeg disponible?
+        r = subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
+        steps["ffmpeg"] = "ok" if r.returncode == 0 else f"error: {r.stderr[:100]}"
+    except Exception as e:
+        steps["ffmpeg"] = f"not found: {e}"
+
+    try:
+        # Step 2: Meta token funciona?
+        req = urllib.request.Request(
+            f"https://graph.facebook.com/v19.0/{media_id}",
+            headers={"Authorization": f"Bearer {META_USER_TOKEN}"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            meta = _json.loads(resp.read())
+        steps["meta_api"] = "ok"
+        steps["audio_url"] = meta.get("url", "no url")[:60] + "..."
+        steps["mime_type"] = meta.get("mime_type")
+    except Exception as e:
+        steps["meta_api"] = f"error: {e}"
+        return {"steps": steps}
+
+    # Step 3: Transcribir
+    result = _transcribe_audio(media_id)
+    steps["transcription"] = result or "FAILED"
+    return {"steps": steps, "transcription": result}
+
+
 @app.get("/recent")
 def recent():
     conn = get_connection(DB_PATH)
