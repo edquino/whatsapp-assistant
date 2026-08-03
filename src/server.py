@@ -74,7 +74,11 @@ async def ingest(request: Request):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "meta_token_set": bool(META_USER_TOKEN),
+        "token_preview": META_USER_TOKEN[:12] + "..." if META_USER_TOKEN else "NOT SET"
+    }
 
 
 @app.get("/recent")
