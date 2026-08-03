@@ -63,6 +63,17 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/recent")
+def recent():
+    conn = get_connection(DB_PATH)
+    rows = conn.execute("""
+        SELECT message_id, sender, content, type, source, amount, created_at
+        FROM messages ORDER BY created_at DESC LIMIT 10
+    """).fetchall()
+    conn.close()
+    return {"count": len(rows), "messages": [dict(r) for r in rows]}
+
+
 # ── Normalización de payload Meta → schema messages ──────────────────────────
 
 def _normalize(msg: dict, value: dict) -> dict | None:
