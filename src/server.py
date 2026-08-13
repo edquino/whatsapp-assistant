@@ -132,7 +132,7 @@ def recent():
 def _transcribe_audio(media_id: str) -> str | None:
     """
     Descarga el audio de Meta, convierte a WAV con ffmpeg,
-    y transcribe con Google Speech Recognition.
+    y transcribe con Whisper local (modelo base, CPU).
     Devuelve el texto o None si falla.
     """
     try:
@@ -172,12 +172,11 @@ def _transcribe_audio(media_id: str) -> str | None:
         if result.returncode != 0:
             return None
 
-        # 5. Transcribir con Google Speech Recognition
-        import speech_recognition as sr
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(wav_path) as source:
-            audio_data = recognizer.record(source)
-        text = recognizer.recognize_google(audio_data, language="es-SV")
+        # 5. Transcribir con Whisper local (CPU, fp16=False obligatorio en Railway)
+        import whisper
+        _model = whisper.load_model("base")
+        result = _model.transcribe(wav_path, language="es", fp16=False)
+        text = result["text"].strip()
 
         return text
 
