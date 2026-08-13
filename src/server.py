@@ -20,19 +20,25 @@ from src.db import get_connection, init_schema
 
 load_dotenv()
 
-app = FastAPI(title="WhatsApp Assistant — Ingest Server")  # redeploy
+app = FastAPI(title="WhatsApp Assistant — Ingest Server")
 
 BACKEND_SECRET  = os.getenv("BACKEND_SECRET", "")
 LINE_NAME       = os.getenv("LINE_NAME", "maurisito")
 DB_PATH         = os.getenv("DB_PATH", "data/whatsapp.db")
 META_USER_TOKEN = os.getenv("META_USER_TOKEN", "")
 
+_WHISPER_MODEL = None
+
 
 @app.on_event("startup")
 def startup():
+    global _WHISPER_MODEL
     conn = get_connection(DB_PATH)
     init_schema(conn)
     conn.close()
+    import whisper
+    _WHISPER_MODEL = whisper.load_model("tiny")
+    print("[startup] Whisper tiny model cargado.")
 
 
 @app.post("/ingest")
@@ -111,19 +117,12 @@ def test_transcribe(media_id: str):
         return {"steps": steps}
 
     # Step 3: Whisper disponible?
-    try:
-        import whisper
-        steps["whisper_import"] = "ok"
-    except Exception as e:
-        steps["whisper_import"] = f"error: {e}"
+    model = _WHISPER_MODEL
+    if model is None:
+        steps["whisper_load_model"] = "error: modelo no cargado en startup"
         return {"steps": steps}
-
-    try:
-        model = whisper.load_model("tiny")
-        steps["whisper_load_model"] = "ok"
-    except Exception as e:
-        steps["whisper_load_model"] = f"error: {e}"
-        return {"steps": steps}
+    steps["whisper_import"] = "ok"
+    steps["whisper_load_model"] = "ok (pre-cargado en startup)"
 
     # Step 4: Transcribir
     try:
@@ -221,8 +220,8 @@ def _transcribe_audio(media_id: str) -> str | None:
 
         # 5. Transcribir con Whisper local — cargar WAV como numpy para evitar
         # que Whisper llame a ffmpeg del sistema (no disponible en Railway)
-        import whisper, wave, numpy as np
-        _model = whisper.load_model("tiny")
+        import wave, numpy as np
+        _model = _WHISPER_MODEL
         with wave.open(wav_path, "rb") as wf:
             frames = wf.readframes(wf.getnframes())
         audio_np = np.frombuffer(frames, np.int16).astype(np.float32) / 32768.0
