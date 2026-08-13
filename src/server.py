@@ -110,10 +110,53 @@ def test_transcribe(media_id: str):
         steps["meta_api"] = f"error: {e}"
         return {"steps": steps}
 
-    # Step 3: Transcribir
-    result = _transcribe_audio(media_id)
-    steps["transcription"] = result or "FAILED"
-    return {"steps": steps, "transcription": result}
+    # Step 3: Whisper disponible?
+    try:
+        import whisper
+        steps["whisper_import"] = "ok"
+    except Exception as e:
+        steps["whisper_import"] = f"error: {e}"
+        return {"steps": steps}
+
+    try:
+        model = whisper.load_model("base")
+        steps["whisper_load_model"] = "ok"
+    except Exception as e:
+        steps["whisper_load_model"] = f"error: {e}"
+        return {"steps": steps}
+
+    # Step 4: Transcribir
+    try:
+        import tempfile, urllib.request as _ur
+        req3 = _ur.Request(steps["audio_url"].rstrip("...") + "PLACEHOLDER", headers={"Authorization": f"Bearer {META_USER_TOKEN}"})
+        # re-fetch audio_url completa
+        req_meta = _ur.Request(f"https://graph.facebook.com/v19.0/{media_id}", headers={"Authorization": f"Bearer {META_USER_TOKEN}"})
+        with _ur.urlopen(req_meta, timeout=10) as resp:
+            import json as _j
+            meta_full = _j.loads(resp.read())
+        audio_url_full = meta_full.get("url")
+        req_audio = _ur.Request(audio_url_full, headers={"Authorization": f"Bearer {META_USER_TOKEN}"})
+        with _ur.urlopen(req_audio, timeout=15) as resp:
+            audio_bytes = resp.read()
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
+            f.write(audio_bytes)
+            ogg_path = f.name
+        wav_path = ogg_path.replace(".ogg", ".wav")
+        from imageio_ffmpeg import get_ffmpeg_exe
+        ffmpeg_bin = get_ffmpeg_exe()
+        import subprocess as _sp
+        r = _sp.run([ffmpeg_bin, "-i", ogg_path, "-ar", "16000", "-ac", "1", "-y", wav_path], capture_output=True, timeout=30)
+        steps["ffmpeg_convert"] = "ok" if r.returncode == 0 else f"error: {r.stderr.decode()[:200]}"
+        if r.returncode != 0:
+            return {"steps": steps}
+        result = model.transcribe(wav_path, language="es", fp16=False)
+        text = result["text"].strip()
+        steps["transcription"] = text
+        return {"steps": steps, "transcription": text}
+    except Exception as e:
+        import traceback
+        steps["transcription_error"] = traceback.format_exc()
+        return {"steps": steps}
 
 
 @app.get("/recent")
