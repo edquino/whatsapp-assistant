@@ -20,7 +20,7 @@ from src.db import get_connection, init_schema
 
 load_dotenv()
 
-app = FastAPI(title="WhatsApp Assistant — Ingest Server")
+app = FastAPI(title="WhatsApp Assistant — Ingest Server")  # redeploy
 
 BACKEND_SECRET  = os.getenv("BACKEND_SECRET", "")
 LINE_NAME       = os.getenv("LINE_NAME", "maurisito")
