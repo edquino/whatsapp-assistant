@@ -149,7 +149,11 @@ def test_transcribe(media_id: str):
         steps["ffmpeg_convert"] = "ok" if r.returncode == 0 else f"error: {r.stderr.decode()[:200]}"
         if r.returncode != 0:
             return {"steps": steps}
-        result = model.transcribe(wav_path, language="es", fp16=False)
+        import wave, numpy as np
+        with wave.open(wav_path, "rb") as wf:
+            frames = wf.readframes(wf.getnframes())
+        audio_np = np.frombuffer(frames, np.int16).astype(np.float32) / 32768.0
+        result = model.transcribe(audio_np, language="es", fp16=False)
         text = result["text"].strip()
         steps["transcription"] = text
         return {"steps": steps, "transcription": text}
@@ -215,10 +219,14 @@ def _transcribe_audio(media_id: str) -> str | None:
         if result.returncode != 0:
             return None
 
-        # 5. Transcribir con Whisper local (CPU, fp16=False obligatorio en Railway)
-        import whisper
+        # 5. Transcribir con Whisper local — cargar WAV como numpy para evitar
+        # que Whisper llame a ffmpeg del sistema (no disponible en Railway)
+        import whisper, wave, numpy as np
         _model = whisper.load_model("base")
-        result = _model.transcribe(wav_path, language="es", fp16=False)
+        with wave.open(wav_path, "rb") as wf:
+            frames = wf.readframes(wf.getnframes())
+        audio_np = np.frombuffer(frames, np.int16).astype(np.float32) / 32768.0
+        result = _model.transcribe(audio_np, language="es", fp16=False)
         text = result["text"].strip()
 
         return text
