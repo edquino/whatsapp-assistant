@@ -119,7 +119,7 @@ def test_transcribe(media_id: str):
         return {"steps": steps}
 
     try:
-        model = whisper.load_model("base")
+        model = whisper.load_model("tiny")
         steps["whisper_load_model"] = "ok"
     except Exception as e:
         steps["whisper_load_model"] = f"error: {e}"
@@ -222,7 +222,7 @@ def _transcribe_audio(media_id: str) -> str | None:
         # 5. Transcribir con Whisper local — cargar WAV como numpy para evitar
         # que Whisper llame a ffmpeg del sistema (no disponible en Railway)
         import whisper, wave, numpy as np
-        _model = whisper.load_model("base")
+        _model = whisper.load_model("tiny")
         with wave.open(wav_path, "rb") as wf:
             frames = wf.readframes(wf.getnframes())
         audio_np = np.frombuffer(frames, np.int16).astype(np.float32) / 32768.0
