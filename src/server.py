@@ -6,7 +6,6 @@ Uso:
     uvicorn src.server:app --reload          # desarrollo local
 """
 import os
-import subprocess
 import tempfile
 import urllib.request
 import urllib.error
@@ -26,19 +25,15 @@ BACKEND_SECRET  = os.getenv("BACKEND_SECRET", "")
 LINE_NAME       = os.getenv("LINE_NAME", "maurisito")
 DB_PATH         = os.getenv("DB_PATH", "data/whatsapp.db")
 META_USER_TOKEN = os.getenv("META_USER_TOKEN", "")
-
-_WHISPER_MODEL = None
+GROQ_API_KEY    = os.getenv("GROQ_API_KEY", "")
 
 
 @app.on_event("startup")
 def startup():
-    global _WHISPER_MODEL
     conn = get_connection(DB_PATH)
     init_schema(conn)
     conn.close()
-    import whisper
-    _WHISPER_MODEL = whisper.load_model("tiny")
-    print("[startup] Whisper tiny model cargado.")
+    print(f"[startup] Groq transcription {'habilitada' if GROQ_API_KEY else 'DESHABILITADA — falta GROQ_API_KEY'}.")
 
 
 @app.post("/ingest")
@@ -83,6 +78,7 @@ def health():
     return {
         "status": "ok",
         "meta_token_set": bool(META_USER_TOKEN),
+        "groq_api_set": bool(GROQ_API_KEY),
         "token_preview": META_USER_TOKEN[:12] + "..." if META_USER_TOKEN else "NOT SET"
     }
 
@@ -177,10 +173,14 @@ def recent():
 
 def _transcribe_audio(media_id: str) -> str | None:
     """
-    Descarga el audio de Meta, convierte a WAV con ffmpeg,
-    y transcribe con Whisper local (modelo base, CPU).
+    Descarga el audio de Meta y transcribe con Groq (Whisper large-v3).
     Devuelve el texto o None si falla.
     """
+    if not GROQ_API_KEY:
+        print("[audio] GROQ_API_KEY no configurada — audio sin transcribir")
+        return None
+
+    ogg_path = None
     try:
         # 1. Obtener URL de descarga desde Meta Graph API
         req = urllib.request.Request(
@@ -201,48 +201,31 @@ def _transcribe_audio(media_id: str) -> str | None:
         with urllib.request.urlopen(req2, timeout=15) as r:
             audio_bytes = r.read()
 
-        # 3. Guardar en archivo temporal
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as ogg_f:
-            ogg_f.write(audio_bytes)
-            ogg_path = ogg_f.name
+        # 3. Transcribir con Groq (Whisper large-v3) — sin ffmpeg, sin modelo local
+        from groq import Groq
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
+            f.write(audio_bytes)
+            ogg_path = f.name
 
-        wav_path = ogg_path.replace(".ogg", ".wav")
-
-        # 4. Convertir a WAV 16kHz mono con ffmpeg (via imageio-ffmpeg, sin depender del sistema)
-        from imageio_ffmpeg import get_ffmpeg_exe
-        ffmpeg_bin = get_ffmpeg_exe()
-        result = subprocess.run(
-            [ffmpeg_bin, "-i", ogg_path, "-ar", "16000", "-ac", "1", "-y", wav_path],
-            capture_output=True, timeout=30
-        )
-        if result.returncode != 0:
-            return None
-
-        # 5. Transcribir con Whisper local — cargar WAV como numpy para evitar
-        # que Whisper llame a ffmpeg del sistema (no disponible en Railway)
-        import wave, numpy as np
-        _model = _WHISPER_MODEL
-        with wave.open(wav_path, "rb") as wf:
-            frames = wf.readframes(wf.getnframes())
-        audio_np = np.frombuffer(frames, np.int16).astype(np.float32) / 32768.0
-        result = _model.transcribe(audio_np, language="es", fp16=False)
-        text = result["text"].strip()
-
-        return text
+        client = Groq(api_key=GROQ_API_KEY)
+        with open(ogg_path, "rb") as f:
+            result = client.audio.transcriptions.create(
+                model="whisper-large-v3",
+                file=("audio.ogg", f, "audio/ogg"),
+                language="es"
+            )
+        return result.text.strip()
 
     except Exception as e:
         print(f"[audio] Error transcripción: {e}")
         return None
 
     finally:
-        # Limpiar archivos temporales
-        for path in [ogg_path if 'ogg_path' in dir() else None,
-                     wav_path if 'wav_path' in dir() else None]:
-            if path:
-                try:
-                    os.unlink(path)
-                except Exception:
-                    pass
+        if ogg_path:
+            try:
+                os.unlink(ogg_path)
+            except Exception:
+                pass
 
 
 # ── Normalización de payload Meta → schema messages ──────────────────────────
