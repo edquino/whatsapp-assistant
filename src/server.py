@@ -11,6 +11,7 @@ import urllib.request
 import urllib.error
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -55,9 +56,11 @@ async def ingest(request: Request):
                 for msg in messages:
                     row = _normalize(msg, value)
                     if row:
-                        # Transcribir audio automáticamente si hay token
-                        if row["type"] == "audio" and row.get("media_ref") and META_USER_TOKEN:
-                            transcription = _transcribe_audio(row["media_ref"])
+                        media_ref = row.get("media_ref")
+
+                        # Transcribir audio automáticamente
+                        if row["type"] == "audio" and media_ref and META_USER_TOKEN:
+                            transcription = _transcribe_audio(media_ref)
                             if transcription:
                                 row["content"] = transcription
                                 row["needs_review"] = 0
@@ -65,6 +68,13 @@ async def ingest(request: Request):
                             else:
                                 row["needs_review"] = 1
                                 print(f"[audio] Sin transcripción — marcado needs_review=1")
+
+                        # Guardar imágenes y documentos antes de que expiren en Meta
+                        if row["type"] in ("image", "doc") and media_ref and META_USER_TOKEN:
+                            media_bytes, ext = _fetch_meta_media(media_ref)
+                            if media_bytes:
+                                row["media_path"] = _save_media(media_bytes, ext, media_ref)
+
                         _upsert(conn, row)
                         inserted += 1
     finally:
@@ -88,7 +98,7 @@ def recent(request: Request):
         raise HTTPException(status_code=403, detail="Forbidden")
     conn = get_connection(DB_PATH)
     rows = conn.execute("""
-        SELECT message_id, sender, content, type, media_ref, source, needs_review, created_at
+        SELECT message_id, sender, content, type, media_ref, media_path, source, needs_review, created_at
         FROM messages ORDER BY created_at DESC LIMIT 10
     """).fetchall()
     conn.close()
@@ -96,6 +106,68 @@ def recent(request: Request):
         content={"count": len(rows), "messages": [dict(r) for r in rows]},
         media_type="application/json; charset=utf-8",
     )
+
+
+# ── Descarga de media desde Meta ─────────────────────────────────────────────
+
+_MIME_EXT = {
+    "image/jpeg":      ".jpg",
+    "image/png":       ".png",
+    "image/webp":      ".webp",
+    "application/pdf": ".pdf",
+    "audio/ogg":       ".ogg",
+    "audio/mpeg":      ".mp3",
+}
+
+
+def _fetch_meta_media(media_id: str) -> tuple[bytes, str] | tuple[None, None]:
+    """
+    Descarga un archivo de Meta Graph API.
+    Devuelve (bytes, extensión) o (None, None) si falla.
+    """
+    if not META_USER_TOKEN:
+        return None, None
+    try:
+        req = urllib.request.Request(
+            f"https://graph.facebook.com/v19.0/{media_id}",
+            headers={"Authorization": f"Bearer {META_USER_TOKEN}"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            meta_info = json.loads(r.read())
+
+        download_url = meta_info.get("url")
+        if not download_url:
+            return None, None
+
+        ext = _MIME_EXT.get(meta_info.get("mime_type", ""), ".bin")
+
+        req2 = urllib.request.Request(
+            download_url,
+            headers={"Authorization": f"Bearer {META_USER_TOKEN}"}
+        )
+        with urllib.request.urlopen(req2, timeout=30) as r:
+            return r.read(), ext
+
+    except Exception as e:
+        print(f"[media] Error descargando {media_id}: {e}")
+        return None, None
+
+
+def _save_media(media_bytes: bytes, ext: str, media_id: str) -> str | None:
+    """
+    Guarda el archivo en el volumen Railway (/data/media/).
+    Devuelve la ruta local o None si falla.
+    """
+    try:
+        media_dir = Path(DB_PATH).parent / "media"
+        media_dir.mkdir(parents=True, exist_ok=True)
+        dest = media_dir / f"{media_id}{ext}"
+        dest.write_bytes(media_bytes)
+        print(f"[media] Guardado: {dest} ({len(media_bytes):,} bytes)")
+        return str(dest)
+    except Exception as e:
+        print(f"[media] Error guardando {media_id}: {e}")
+        return None
 
 
 # ── Transcripción de audio ────────────────────────────────────────────────────
@@ -109,31 +181,15 @@ def _transcribe_audio(media_id: str) -> str | None:
         print("[audio] GROQ_API_KEY no configurada — audio sin transcribir")
         return None
 
+    media_bytes, _ = _fetch_meta_media(media_id)
+    if not media_bytes:
+        return None
+
     ogg_path = None
     try:
-        # 1. Obtener URL de descarga desde Meta Graph API
-        req = urllib.request.Request(
-            f"https://graph.facebook.com/v19.0/{media_id}",
-            headers={"Authorization": f"Bearer {META_USER_TOKEN}"}
-        )
-        with urllib.request.urlopen(req, timeout=10) as r:
-            meta = json.loads(r.read())
-        audio_url = meta.get("url")
-        if not audio_url:
-            return None
-
-        # 2. Descargar el archivo OGG/Opus
-        req2 = urllib.request.Request(
-            audio_url,
-            headers={"Authorization": f"Bearer {META_USER_TOKEN}"}
-        )
-        with urllib.request.urlopen(req2, timeout=15) as r:
-            audio_bytes = r.read()
-
-        # 3. Transcribir con Groq (Whisper large-v3) — sin ffmpeg, sin modelo local
         from groq import Groq
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
-            f.write(audio_bytes)
+            f.write(media_bytes)
             ogg_path = f.name
 
         client = Groq(api_key=GROQ_API_KEY)
@@ -198,6 +254,7 @@ def _normalize(msg: dict, value: dict) -> dict | None:
         "type":        msg_type,
         "content":     content,
         "media_ref":   media_ref,
+        "media_path":  None,
         "source":      "webhook",
         "needs_review": 0,
     }
@@ -207,8 +264,8 @@ def _upsert(conn, row: dict) -> None:
     conn.execute("""
         INSERT OR IGNORE INTO messages
           (message_id, line, chat_ref, sender, timestamp,
-           type, content, media_ref, source, needs_review)
+           type, content, media_ref, media_path, source, needs_review)
         VALUES (:message_id,:line,:chat_ref,:sender,:timestamp,
-                :type,:content,:media_ref,:source,:needs_review)
+                :type,:content,:media_ref,:media_path,:source,:needs_review)
     """, row)
     conn.commit()

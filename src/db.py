@@ -24,6 +24,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             type         TEXT,
             content      TEXT,
             media_ref    TEXT,
+            media_path   TEXT,
             quoted_id    TEXT,
             source       TEXT DEFAULT 'export',
             needs_review INTEGER DEFAULT 0,
@@ -35,3 +36,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
             ON messages (chat_ref);
     """)
     conn.commit()
+    # Migration para DBs existentes que no tienen media_path
+    try:
+        conn.execute("ALTER TABLE messages ADD COLUMN media_path TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # columna ya existe
