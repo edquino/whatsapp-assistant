@@ -13,6 +13,7 @@ import json
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 
 from src.db import get_connection, init_schema
@@ -39,9 +40,8 @@ def startup():
 @app.post("/ingest")
 async def ingest(request: Request):
     """Recibe el payload raw de Meta, reenviado por el Cloudflare Worker."""
-    if BACKEND_SECRET:
-        if request.headers.get("x-worker-secret") != BACKEND_SECRET:
-            raise HTTPException(status_code=403, detail="Forbidden")
+    if not BACKEND_SECRET or request.headers.get("x-worker-secret") != BACKEND_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
 
     body = await request.json()
 
@@ -84,7 +84,7 @@ def health():
 
 @app.get("/recent")
 def recent(request: Request):
-    if BACKEND_SECRET and request.headers.get("x-worker-secret") != BACKEND_SECRET:
+    if not BACKEND_SECRET or request.headers.get("x-worker-secret") != BACKEND_SECRET:
         raise HTTPException(status_code=403, detail="Forbidden")
     conn = get_connection(DB_PATH)
     rows = conn.execute("""
@@ -92,7 +92,10 @@ def recent(request: Request):
         FROM messages ORDER BY created_at DESC LIMIT 10
     """).fetchall()
     conn.close()
-    return {"count": len(rows), "messages": [dict(r) for r in rows]}
+    return JSONResponse(
+        content={"count": len(rows), "messages": [dict(r) for r in rows]},
+        media_type="application/json; charset=utf-8",
+    )
 
 
 # ── Transcripción de audio ────────────────────────────────────────────────────
