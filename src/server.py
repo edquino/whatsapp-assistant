@@ -79,87 +79,13 @@ def health():
         "status": "ok",
         "meta_token_set": bool(META_USER_TOKEN),
         "groq_api_set": bool(GROQ_API_KEY),
-        "token_preview": META_USER_TOKEN[:12] + "..." if META_USER_TOKEN else "NOT SET"
     }
 
 
-@app.get("/test-transcribe/{media_id}")
-def test_transcribe(media_id: str):
-    """Diagnóstico: intenta transcribir un media_id y devuelve el resultado o error."""
-    import subprocess, tempfile, urllib.request, json as _json
-    steps = {}
-    try:
-        # Step 1: ffmpeg disponible via imageio-ffmpeg?
-        from imageio_ffmpeg import get_ffmpeg_exe
-        ffmpeg_bin = get_ffmpeg_exe()
-        r = subprocess.run([ffmpeg_bin, "-version"], capture_output=True, timeout=5)
-        steps["ffmpeg"] = f"ok ({ffmpeg_bin})" if r.returncode == 0 else f"error: {r.stderr[:100]}"
-    except Exception as e:
-        steps["ffmpeg"] = f"not found: {e}"
-
-    try:
-        # Step 2: Meta token funciona?
-        req = urllib.request.Request(
-            f"https://graph.facebook.com/v19.0/{media_id}",
-            headers={"Authorization": f"Bearer {META_USER_TOKEN}"}
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            meta = _json.loads(resp.read())
-        steps["meta_api"] = "ok"
-        steps["audio_url"] = meta.get("url", "no url")[:60] + "..."
-        steps["mime_type"] = meta.get("mime_type")
-    except Exception as e:
-        steps["meta_api"] = f"error: {e}"
-        return {"steps": steps}
-
-    # Step 3: Whisper disponible?
-    model = _WHISPER_MODEL
-    if model is None:
-        steps["whisper_load_model"] = "error: modelo no cargado en startup"
-        return {"steps": steps}
-    steps["whisper_import"] = "ok"
-    steps["whisper_load_model"] = "ok (pre-cargado en startup)"
-
-    # Step 4: Transcribir
-    try:
-        import tempfile, urllib.request as _ur
-        req3 = _ur.Request(steps["audio_url"].rstrip("...") + "PLACEHOLDER", headers={"Authorization": f"Bearer {META_USER_TOKEN}"})
-        # re-fetch audio_url completa
-        req_meta = _ur.Request(f"https://graph.facebook.com/v19.0/{media_id}", headers={"Authorization": f"Bearer {META_USER_TOKEN}"})
-        with _ur.urlopen(req_meta, timeout=10) as resp:
-            import json as _j
-            meta_full = _j.loads(resp.read())
-        audio_url_full = meta_full.get("url")
-        req_audio = _ur.Request(audio_url_full, headers={"Authorization": f"Bearer {META_USER_TOKEN}"})
-        with _ur.urlopen(req_audio, timeout=15) as resp:
-            audio_bytes = resp.read()
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
-            f.write(audio_bytes)
-            ogg_path = f.name
-        wav_path = ogg_path.replace(".ogg", ".wav")
-        from imageio_ffmpeg import get_ffmpeg_exe
-        ffmpeg_bin = get_ffmpeg_exe()
-        import subprocess as _sp
-        r = _sp.run([ffmpeg_bin, "-i", ogg_path, "-ar", "16000", "-ac", "1", "-y", wav_path], capture_output=True, timeout=30)
-        steps["ffmpeg_convert"] = "ok" if r.returncode == 0 else f"error: {r.stderr.decode()[:200]}"
-        if r.returncode != 0:
-            return {"steps": steps}
-        import wave, numpy as np
-        with wave.open(wav_path, "rb") as wf:
-            frames = wf.readframes(wf.getnframes())
-        audio_np = np.frombuffer(frames, np.int16).astype(np.float32) / 32768.0
-        result = model.transcribe(audio_np, language="es", fp16=False)
-        text = result["text"].strip()
-        steps["transcription"] = text
-        return {"steps": steps, "transcription": text}
-    except Exception as e:
-        import traceback
-        steps["transcription_error"] = traceback.format_exc()
-        return {"steps": steps}
-
-
 @app.get("/recent")
-def recent():
+def recent(request: Request):
+    if BACKEND_SECRET and request.headers.get("x-worker-secret") != BACKEND_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
     conn = get_connection(DB_PATH)
     rows = conn.execute("""
         SELECT message_id, sender, content, type, media_ref, source, needs_review, created_at
