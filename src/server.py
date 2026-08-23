@@ -6,6 +6,7 @@ Uso:
     uvicorn src.server:app --reload          # desarrollo local
 """
 import os
+import re
 import tempfile
 import urllib.request
 import urllib.error
@@ -75,6 +76,16 @@ async def ingest(request: Request):
                             if media_bytes:
                                 row["media_path"] = _save_media(media_bytes, ext, media_ref)
 
+                        # Extraer monto de mensajes de texto (regla Henry B8-c)
+                        if row["type"] == "text" and row.get("content"):
+                            amount, multi = _extract_amount(row["content"])
+                            row["amount"] = amount
+                            if multi:
+                                row["needs_review"] = 1
+                                print(f"[amount] Múltiples montos → needs_review=1: {row['content'][:60]}")
+                            elif amount is not None:
+                                print(f"[amount] Extraído: ${amount}")
+
                         _upsert(conn, row)
                         inserted += 1
     finally:
@@ -98,7 +109,7 @@ def recent(request: Request):
         raise HTTPException(status_code=403, detail="Forbidden")
     conn = get_connection(DB_PATH)
     rows = conn.execute("""
-        SELECT message_id, sender, content, type, media_ref, media_path, source, needs_review, created_at
+        SELECT message_id, sender, content, type, media_ref, media_path, amount, source, needs_review, created_at
         FROM messages ORDER BY created_at DESC LIMIT 10
     """).fetchall()
     conn.close()
@@ -213,6 +224,26 @@ def _transcribe_audio(media_id: str) -> str | None:
                 pass
 
 
+# ── Extracción de montos ─────────────────────────────────────────────────────
+
+# Captura formatos salvadoreños: $29.40  $29. 40  $1,197.00  $150  $ 150
+_AMOUNT_RE = re.compile(r'\$\s*[\d,]+(?:\.\s*\d+)?')
+
+
+def _extract_amount(text: str) -> tuple[float | None, bool]:
+    """
+    Regla Henry (B8-c): 1 monto → (valor, False) | >1 → (None, True) | 0 → (None, False).
+    Nunca entra un número dudoso en la suma de gastos por obra.
+    """
+    matches = _AMOUNT_RE.findall(text)
+    if len(matches) == 1:
+        try:
+            return float(re.sub(r'[\s,]', '', matches[0].replace('$', ''))), False
+        except ValueError:
+            return None, False
+    return (None, len(matches) > 1)
+
+
 # ── Normalización de payload Meta → schema messages ──────────────────────────
 
 def _normalize(msg: dict, value: dict) -> dict | None:
@@ -246,7 +277,7 @@ def _normalize(msg: dict, value: dict) -> dict | None:
     chat_ref = f"dm:{from_num}"
 
     return {
-        "message_id": msg_id,
+        "message_id":  msg_id,
         "line":        LINE_NAME,
         "chat_ref":    chat_ref,
         "sender":      from_num,
@@ -255,6 +286,7 @@ def _normalize(msg: dict, value: dict) -> dict | None:
         "content":     content,
         "media_ref":   media_ref,
         "media_path":  None,
+        "amount":      None,
         "source":      "webhook",
         "needs_review": 0,
     }
@@ -264,8 +296,8 @@ def _upsert(conn, row: dict) -> None:
     conn.execute("""
         INSERT OR IGNORE INTO messages
           (message_id, line, chat_ref, sender, timestamp,
-           type, content, media_ref, media_path, source, needs_review)
+           type, content, media_ref, media_path, amount, source, needs_review)
         VALUES (:message_id,:line,:chat_ref,:sender,:timestamp,
-                :type,:content,:media_ref,:media_path,:source,:needs_review)
+                :type,:content,:media_ref,:media_path,:amount,:source,:needs_review)
     """, row)
     conn.commit()
